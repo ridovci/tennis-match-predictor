@@ -13,11 +13,13 @@ try:
         fetch_live_events_via_page, fetch_all_event_details, fetch_player_profile,
         fetch_player_matches, fetch_rankings_via_page
     )
+    from app.tgs_calculator import get_match_prediction
 except ImportError:
     from collector import (
         fetch_live_events_via_page, fetch_all_event_details, fetch_player_profile,
         fetch_player_matches, fetch_rankings_via_page
     )
+    from tgs_calculator import get_match_prediction
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -146,3 +148,15 @@ def get_active_tournament_stats(team_id: int):
     except Exception as e:
         print(f"active_tournament_stats (genel) hata: {e}")
         return JSONResponse(content={"error": "Beklenmedik bir hata oluştu."}, status_code=500)
+    
+@app.get("/api/match-prediction/{event_id}")
+async def api_match_prediction(event_id: int):
+    try:
+        prediction_data = await get_match_prediction(event_id)
+        if "error" in prediction_data:
+            return JSONResponse(content=prediction_data, status_code=404)
+        return JSONResponse(content=prediction_data)
+    except Exception as e:
+        print(f"api_match_prediction (event_id: {event_id}) genel hata:", e)
+        return JSONResponse(content={"error": "Tahmin hesaplanırken beklenmedik bir hata oluştu.", "detail": str(e)}, status_code=500)
+

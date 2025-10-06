@@ -24,6 +24,7 @@
         <div class="border-b mb-4 sticky top-0 bg-white z-10 pb-2">
           <nav class="flex flex-wrap gap-2" id="modalTabs">
             <button class="tabBtn" data-tab="summary">📋 Özet</button>
+            <button class="tabBtn" data-tab="prediction">🧠 Tahmin</button>
             <button class="tabBtn" data-tab="statistics">📊 İstatistikler</button>
             <button class="tabBtn" data-tab="point">🎯 Puan Puan</button>
             <button class="tabBtn" data-tab="momentum">📈 Momentum</button>
@@ -39,21 +40,21 @@
   </div>
 
   <div id="playerModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50">
-    <div class="bg-white rounded-2xl shadow-2xl max-w-3xl w-full mx-4 relative max-h-[80vh] overflow-y-auto">
-      <button onclick="closePlayerModal()" class="absolute top-3 right-3 text-white bg-indigo-600 hover:bg-indigo-700 rounded-full p-2 shadow">✕</button>
-      <div class="p-6">
-        <h2 id="playerName" class="text-2xl font-bold text-indigo-700 mb-2"></h2>
-        <p id="playerCountry" class="text-gray-600 mb-4 italic"></p>
-        <div class="border-b mb-4 sticky top-0 bg-white z-10 pb-2">
-          <nav class="flex gap-2">
-            <button class="playerTabBtn" data-tab="profile">👤 Profil</button>
-            <button class="playerTabBtn" data-tab="matches">🎾 Son Maçlar</button>
-          </nav>
+      <div class="bg-white rounded-2xl shadow-2xl max-w-3xl w-full mx-4 relative max-h-[80vh] overflow-y-auto">
+        <button onclick="closePlayerModal()" class="absolute top-3 right-3 text-white bg-indigo-600 hover:bg-indigo-700 rounded-full p-2 shadow">✕</button>
+        <div class="p-6">
+          <h2 id="playerName" class="text-2xl font-bold text-indigo-700 mb-2"></h2>
+          <p id="playerCountry" class="text-gray-600 mb-4 italic"></p>
+          <div class="border-b mb-4 sticky top-0 bg-white z-10 pb-2">
+            <nav class="flex gap-2">
+              <button class="playerTabBtn" data-tab="profile">👤 Profil</button>
+              <button class="playerTabBtn" data-tab="matches">🎾 Son Maçlar</button>
+            </nav>
+          </div>
+          <div id="playerTabContent" class="text-sm text-gray-700 leading-relaxed">Yükleniyor...</div>
         </div>
-        <div id="playerTabContent" class="text-sm text-gray-700 leading-relaxed">Yükleniyor...</div>
       </div>
     </div>
-  </div>
 
 <script>
   /* ---------- Global Değişkenler ve Yardımcılar ---------- */
@@ -62,9 +63,6 @@
   let currentEventDetails = null;
   const playerDataCache = {};
 
-  /**
-   * GÜNCELLENMİŞ FONKSİYON: Modal kapatıldığında HTML yapısını bozmadan sadece içeriği temizler.
-   */
   function closeModal() {
     const modal = document.getElementById("modal");
     modal.classList.add("hidden");
@@ -77,14 +75,13 @@
     currentEventData = null;
     currentEventDetails = null;
 
-    // HTML elementlerini silmek yerine, sadece içeriklerini temizle
     const matchPlayers = document.getElementById("matchPlayers");
     const subtitle = document.getElementById("modalSubtitle");
     const tabContent = document.getElementById("tabContent");
 
     if (matchPlayers) matchPlayers.innerHTML = '';
     if (subtitle) subtitle.textContent = '';
-    if (tabContent) tabContent.innerHTML = 'Yükleniyor...'; // Bir sonraki açılış için hazırla
+    if (tabContent) tabContent.innerHTML = 'Yükleniyor...';
     
     console.log("🧹 Maç verileri temizlendi.");
   }
@@ -122,7 +119,9 @@ async function refreshModalData() {
       const activeTabBtn = document.querySelector(".tabBtn.text-indigo-600.font-semibold");
       if (activeTabBtn) {
         const activeTab = activeTabBtn.dataset.tab;
-        loadTabContent(activeTab, currentEventData, currentEventDetails);
+        if (activeTab !== 'prediction') { // Tahmin sekmesi kendi kendini yenilemez
+            loadTabContent(activeTab, currentEventData, currentEventDetails);
+        }
       }
     } catch (error) {
       console.error("Modal yenileme hatası:", error);
@@ -132,12 +131,12 @@ async function refreshModalData() {
   /* ---------- Maç Modalı ---------- */
   async function openModal(eventData) {
     const modal = document.getElementById("modal");
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    
     const tabContent = document.getElementById("tabContent");
     const subtitle = document.getElementById("modalSubtitle");
     const matchPlayers = document.getElementById("matchPlayers");
-
-    modal.classList.remove("hidden");
-    modal.classList.add("flex");
 
     matchPlayers.innerHTML = `<span class="text-blue-700 cursor-pointer hover:underline" onclick="openPlayerModal(${eventData.homeTeam.id}, '${eventData.homeTeam.name.replace(/'/g, "\\'")}')">${eventData.homeTeam.name}</span> vs <span class="text-orange-600 cursor-pointer hover:underline" onclick="openPlayerModal(${eventData.awayTeam.id}, '${eventData.awayTeam.name.replace(/'/g, "\\'")}')">${eventData.awayTeam.name}</span>`;
     subtitle.textContent = eventData.tournament?.name || "";
@@ -166,17 +165,110 @@ async function refreshModalData() {
 
         if (modalRefreshInterval) clearInterval(modalRefreshInterval);
         modalRefreshInterval = setInterval(refreshModalData, 10000);
-        console.log("🟢 Modal yenileme döngüsü başlatıldı.");
     } catch (error) {
         tabContent.innerHTML = "<p class='text-red-600'>Maç detayları yüklenirken bir hata oluştu.</p>";
         console.error("Maç detayı yükleme hatası:", error);
     }
   }
 
-  function loadTabContent(tab, eventData, details) {
+  /**
+   * loadTabContent fonksiyonu güncellendi
+   */
+  async function loadTabContent(tab, eventData, details) {
     const content = document.getElementById("tabContent");
     content.innerHTML = "";
 
+    if (tab === "prediction") {
+        const loadingSteps = [
+            "Tahmin motoru başlatılıyor...",
+            "Maçın temel bilgileri ve oyuncu ID'leri alınıyor...",
+            `[${eventData.homeTeam.name}] için veri toplanıyor (Maç geçmişi, yıllık istatistikler vb.)...`,
+            `[${eventData.awayTeam.name}] için veri toplanıyor (Maç geçmişi, yıllık istatistikler vb.)...`,
+            "Tüm veriler toplandı, TGS metrikleri yüzeye göre hesaplanıyor..."
+        ];
+
+        let stepIndex = 0;
+        content.innerHTML = `<div class="flex flex-col items-center justify-center py-10 text-gray-600">
+                               <div class="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-indigo-600 mb-3"></div>
+                               <p id="loading-status">${loadingSteps[stepIndex]}</p>
+                             </div>`;
+        const statusElement = document.getElementById("loading-status");
+
+        const interval = setInterval(() => {
+            stepIndex++;
+            if (stepIndex < loadingSteps.length) {
+                statusElement.textContent = loadingSteps[stepIndex];
+            } else {
+                clearInterval(interval);
+            }
+        }, 2000); // Her 2 saniyede bir mesajı güncelle
+
+        try {
+            const res = await fetch(`/api/match-prediction/${eventData.id}`);
+            clearInterval(interval); // API cevabı gelince interval'i durdur
+            if (!res.ok) throw new Error(`Sunucu hatası: ${res.status}`);
+            
+            const data = await res.json();
+            if (data.error) {
+                content.innerHTML = `<p class="text-red-500">${data.error}</p>`;
+                return;
+            }
+
+            const homeProb = (data.home_win_prob * 100).toFixed(1);
+            const awayProb = (data.away_win_prob * 100).toFixed(1);
+            
+            let tableRows = '';
+            for (const key of Object.keys(data.weights).sort()) {
+                const weight = (data.weights[key] * 100).toFixed(1);
+                const homeScore = data.scores.home[key] !== undefined ? data.scores.home[key].toFixed(3) : '-';
+                const awayScore = data.scores.away[key] !== undefined ? data.scores.away[key].toFixed(3) : '-';
+                const metricName = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+                tableRows += `<tr class="border-t hover:bg-gray-50">
+                                <td class="py-2 px-3 font-semibold text-gray-600">${metricName} <span class="text-xs italic text-gray-400">(${weight}%)</span></td>
+                                <td class="py-2 px-3 text-center">${homeScore}</td>
+                                <td class="py-2 px-3 text-center">${awayScore}</td>
+                              </tr>`;
+            }
+
+            content.innerHTML = `
+                <div class="space-y-6">
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="font-bold text-blue-700">${data.home_player_name}</span>
+                            <span class="font-bold text-orange-600">${data.away_player_name}</span>
+                        </div>
+                        <div class="flex w-full h-8 bg-gray-200 rounded-full overflow-hidden">
+                            <div class="flex items-center justify-center h-full bg-blue-600 text-white font-bold" style="width: ${homeProb}%">${homeProb}%</div>
+                            <div class="flex items-center justify-center h-full bg-orange-500 text-white font-bold" style="width: ${awayProb}%">${awayProb}%</div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-lg font-bold text-indigo-700 mb-2">Metrik Detayları</h4>
+                        <table class="min-w-full border text-sm border-gray-300 rounded-lg">
+                            <thead class="bg-indigo-50">
+                                <tr>
+                                    <th class="py-2 px-3 text-left font-semibold">Metrik (Ağırlık)</th>
+                                    <th class="py-2 px-3 text-center font-semibold">Ev Sahibi Skor</th>
+                                    <th class="py-2 px-3 text-center font-semibold">Deplasman Skor</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${tableRows}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        } catch(err) {
+            clearInterval(interval);
+            content.innerHTML = `<p class="text-red-500">Tahmin hesaplanırken bir hata oluştu. Sunucu loglarını kontrol edin.</p>`;
+            console.error("Tahmin API hatası:", err);
+        }
+        return;
+    }
+    
+    // ... (diğer sekmelerin 'if' blokları burada devam eder ve aynı kalır)
     if (tab === "summary") {
       const homeScore = eventData.homeScore;
       const awayScore = eventData.awayScore;
@@ -201,6 +293,8 @@ async function refreshModalData() {
                            </div>`;
       return;
     }
+
+  
 
     if (tab === "statistics") {
       const stats = details.statistics?.statistics || [];
