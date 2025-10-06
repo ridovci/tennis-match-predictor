@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tennis Live Matches — MVP</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-r from-indigo-200 via-purple-200 to-pink-200 min-h-screen p-8">
+  <div class="max-w-7xl mx-auto">
+    <header class="flex items-center justify-between mb-8">
+      <h1 class="text-4xl font-extrabold text-gray-800 drop-shadow-lg">🎾 Tennis Live Matches</h1>
+      <div id="lastUpdate" class="text-sm text-gray-600 italic"></div>
+    </header>
+
+    <p class="mb-6 text-gray-700 font-medium">Sofascore'dan canlı tenis maçları (her 60 sn’de yenilenir)</p>
+    <div id="status" class="text-gray-600 italic">Veri yükleniyor...</div>
+    <div id="matches" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8"></div>
+  </div>
+
+<!-- Modal -->
+<div id="modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50">
+  <div class="bg-gradient-to-br from-white via-gray-50 to-gray-100 rounded-2xl shadow-2xl max-w-2xl w-full mx-4 relative transform transition-all scale-95 opacity-0"
+       id="modalBox">
+    
+    <!-- Close Button -->
+    <button onclick="closeModal()" 
+            class="absolute top-3 right-3 text-white bg-indigo-600 hover:bg-indigo-700 rounded-full p-2 shadow">
+      ✕
+    </button>
+
+    <!-- Modal İçerik -->
+    <div id="modalContent" class="p-6">
+      <!-- Dinamik içerik buraya basılacak -->
+    </div>
+  </div>
+</div>
+
+<script>
+function openModal(eventData) {
+  const modal = document.getElementById("modal");
+  const box = document.getElementById("modalBox");
+  const modalContent = document.getElementById("modalContent");
+
+  modalContent.innerHTML = `
+    <h2 class="text-2xl font-bold text-indigo-700 mb-2">
+      ${eventData.homeTeam?.name} vs ${eventData.awayTeam?.name}
+    </h2>
+    <p class="text-gray-600 mb-4 italic">${eventData.tournament?.name || "Turnuva Bilgisi Yok"}</p>
+    <div class="flex justify-center items-center gap-4 text-3xl font-extrabold text-indigo-800 mb-6">
+      <span>${eventData.homeScore?.current ?? 0}</span>
+      <span>-</span>
+      <span>${eventData.awayScore?.current ?? 0}</span>
+    </div>
+    <div class="space-y-3">
+      <div class="p-4 bg-white rounded-lg shadow text-sm text-gray-700">
+        📊 H2H verileri buraya gelecek (dummy)
+      </div>
+      <div class="p-4 bg-white rounded-lg shadow text-sm text-gray-700">
+        📈 Oyuncu form durumu (dummy)
+      </div>
+      <div class="p-4 bg-white rounded-lg shadow text-sm text-gray-700">
+        🎯 Point-by-point verisi (dummy)
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+
+  // küçük animasyon efekti
+  setTimeout(() => {
+    box.classList.remove("scale-95", "opacity-0");
+    box.classList.add("scale-100", "opacity-100");
+  }, 50);
+}
+
+function closeModal() {
+  const modal = document.getElementById("modal");
+  const box = document.getElementById("modalBox");
+
+  // animasyon kapatma
+  box.classList.remove("scale-100", "opacity-100");
+  box.classList.add("scale-95", "opacity-0");
+
+  setTimeout(() => {
+    modal.classList.add("hidden");
+  }, 200);
+}
+
+// Modal dışına tıklama → kapatma
+document.getElementById("modal").addEventListener("click", function(e) {
+  if (e.target.id === "modal") {
+    closeModal();
+  }
+});
+
+function getTournamentLogo(ev) {
+  if (ev.tournament?.uniqueTournament?.id) {
+    return `https://api.sofascore.app/api/v1/unique-tournament/${ev.tournament.uniqueTournament.id}/image`;
+  }
+  if (ev.tournament?.category?.id) {
+    return `https://api.sofascore.app/api/v1/category/${ev.tournament.category.id}/image`;
+  }
+  return "https://cdn-icons-png.flaticon.com/512/861/861512.png"; // fallback 🎾
+}
+
+async function loadMatches() {
+  const container = document.getElementById("matches");
+  const statusEl = document.getElementById("status");
+  const lastUpdateEl = document.getElementById("lastUpdate");
+  container.innerHTML = "";
+
+  try {
+    const res = await fetch("/api/live-matches");
+    const data = await res.json();
+
+    if (!data.events || data.events.length === 0) {
+      statusEl.textContent = "Şu an canlı maç yok.";
+      return;
+    }
+
+    statusEl.textContent = "";
+    lastUpdateEl.textContent = "Son güncelleme: " + new Date().toLocaleTimeString("tr-TR");
+
+    for (const e of data.events) {
+      const homeFlag = e.homeTeam?.country?.alpha2 
+          ? `https://flagsapi.com/${e.homeTeam.country.alpha2}/flat/64.png` 
+          : "https://cdn-icons-png.flaticon.com/512/861/861512.png";
+
+      const awayFlag = e.awayTeam?.country?.alpha2 
+          ? `https://flagsapi.com/${e.awayTeam.country.alpha2}/flat/64.png` 
+          : "https://cdn-icons-png.flaticon.com/512/861/861512.png";
+
+      const tournamentLogo = getTournamentLogo(e);
+
+      const card = document.createElement("div");
+      card.className = "bg-white rounded-2xl shadow-lg overflow-hidden hover:shadow-2xl hover:-translate-y-1 transform transition duration-300 cursor-pointer";
+
+      card.innerHTML = `
+        <div class="bg-gradient-to-r from-indigo-600 to-purple-600 p-3 flex items-center justify-center gap-3">
+          <img src="${tournamentLogo}" 
+               onerror="this.onerror=null;this.src='https://cdn-icons-png.flaticon.com/512/861/861512.png';"
+               class="w-10 h-10 rounded-full border-2 border-white shadow-md bg-white object-cover" 
+               alt="Turnuva">
+          <span class="text-white font-semibold text-sm truncate max-w-[200px]">${e.tournament?.name || "?"}</span>
+        </div>
+        <div class="p-6 text-center">
+          <div class="flex items-center justify-between mb-4 flex-nowrap">
+            <div class="flex items-center gap-2">
+              <img src="${homeFlag}" class="w-7 h-7 rounded-full border bg-white" />
+              <span class="font-semibold text-gray-900">${e.homeTeam?.name || "?"}</span>
+            </div>
+            <div class="mx-3 text-2xl font-extrabold text-indigo-700 min-w-[90px] text-center whitespace-nowrap">
+              ${e.homeScore?.current ?? 0} - ${e.awayScore?.current ?? 0}
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-gray-900">${e.awayTeam?.name || "?"}</span>
+              <img src="${awayFlag}" class="w-7 h-7 rounded-full border bg-white" />
+            </div>
+          </div>
+          <div class="text-sm text-gray-600 italic">Event ID: ${e.id}</div>
+        </div>
+      `;
+      
+      card.addEventListener("click", () => openModal(e));
+      container.appendChild(card);
+    }
+  } catch (err) {
+    statusEl.textContent = "Veri alınırken hata oluştu.";
+    console.error("API error:", err);
+  }
+}
+
+setInterval(loadMatches, 60000);
+loadMatches();
+</script>
+</body>
+</html>
