@@ -62,14 +62,33 @@
   let currentEventDetails = null;
   const playerDataCache = {};
 
+  /**
+   * GÜNCELLENMİŞ FONKSİYON: Modal kapatıldığında HTML yapısını bozmadan sadece içeriği temizler.
+   */
   function closeModal() {
-    document.getElementById("modal").classList.add("hidden");
+    const modal = document.getElementById("modal");
+    modal.classList.add("hidden");
+
     if (modalRefreshInterval) {
       clearInterval(modalRefreshInterval);
       modalRefreshInterval = null;
-      console.log("🔹 Modal yenileme döngüsü durduruldu.");
     }
+
+    currentEventData = null;
+    currentEventDetails = null;
+
+    // HTML elementlerini silmek yerine, sadece içeriklerini temizle
+    const matchPlayers = document.getElementById("matchPlayers");
+    const subtitle = document.getElementById("modalSubtitle");
+    const tabContent = document.getElementById("tabContent");
+
+    if (matchPlayers) matchPlayers.innerHTML = '';
+    if (subtitle) subtitle.textContent = '';
+    if (tabContent) tabContent.innerHTML = 'Yükleniyor...'; // Bir sonraki açılış için hazırla
+    
+    console.log("🧹 Maç verileri temizlendi.");
   }
+
   function closePlayerModal() { document.getElementById("playerModal").classList.add("hidden"); }
 
   function createTable(headers, rows) {
@@ -86,34 +105,23 @@ async function refreshModalData() {
 
     try {
       console.log(`🔄 Maç verileri yenileniyor: Event ID ${currentEventData.id}`);
-
-      // ADIM 1: Ana canlı maç listesini çekerek en güncel skor ve durum bilgisini al.
       const liveMatchesRes = await fetch(`/api/live-matches`);
       if (liveMatchesRes.ok) {
           const liveMatchesData = await liveMatchesRes.json();
           const updatedEventData = liveMatchesData.events.find(e => e.id === currentEventData.id);
-          
-          // Eğer maç hala canlı listede varsa, global maç verisini güncelle.
-          // Bu, "Özet" sekmesinin doğru veriyi kullanmasını sağlar.
           if (updatedEventData) {
               currentEventData = updatedEventData;
-          } else {
-              console.warn("Maç artık canlı listede bulunamadı (muhtemelen sona erdi).");
           }
       }
 
-      // ADIM 2: İstatistikler gibi diğer detayları her zamanki gibi çek.
       const detailsRes = await fetch(`/api/match-details/${currentEventData.id}`);
       if (!detailsRes.ok) throw new Error(`API Detay Hatası: ${detailsRes.status}`);
       const newDetails = await detailsRes.json();
       currentEventDetails = newDetails;
 
-      // ADIM 3: Aktif sekmeyi güncellenmiş verilerle yeniden oluştur.
       const activeTabBtn = document.querySelector(".tabBtn.text-indigo-600.font-semibold");
       if (activeTabBtn) {
         const activeTab = activeTabBtn.dataset.tab;
-        console.log(`🔹 Aktif sekme (${activeTab}) yeniden yükleniyor...`);
-        // Hem ana veri (currentEventData) hem de detay veri (currentEventDetails) güncel.
         loadTabContent(activeTab, currentEventData, currentEventDetails);
       }
     } catch (error) {
@@ -157,7 +165,7 @@ async function refreshModalData() {
         loadTabContent("summary", currentEventData, currentEventDetails);
 
         if (modalRefreshInterval) clearInterval(modalRefreshInterval);
-        modalRefreshInterval = setInterval(refreshModalData, 10000); // Her 10 saniyede bir yenile
+        modalRefreshInterval = setInterval(refreshModalData, 10000);
         console.log("🟢 Modal yenileme döngüsü başlatıldı.");
     } catch (error) {
         tabContent.innerHTML = "<p class='text-red-600'>Maç detayları yüklenirken bir hata oluştu.</p>";
@@ -173,25 +181,19 @@ async function refreshModalData() {
       const homeScore = eventData.homeScore;
       const awayScore = eventData.awayScore;
       const sets = [];
-
-      // Sadece standart set skorlarını (period1, period2, vb.) sırayla alacak şekilde güncellenmiş mantık
       if (homeScore && awayScore) {
-          for (let i = 1; i <= 5; i++) { // Bir tenis maçı en fazla 5 set olabilir
+          for (let i = 1; i <= 5; i++) {
               const periodKey = `period${i}`;
-              // Sadece 'periodX' anahtarı varsa ve bir skoru varsa listeye ekle
               if (homeScore.hasOwnProperty(periodKey) && awayScore.hasOwnProperty(periodKey)) {
                   sets.push(`${homeScore[periodKey]} - ${awayScore[periodKey]}`);
               } else {
-                  // Eğer bir set anahtarı bulunamazsa, daha fazla arama yapmaya gerek yok.
                   break;
               }
           }
       }
-
       const currentScore = homeScore ? `${homeScore.current} - ${awayScore.current}` : "0 - 0";
       const statusText = eventData.status?.description || "Maç devam ediyor";
       const setsText = sets.length ? "Setler: " + sets.join(", ") : "";
-
       content.innerHTML = `<div class="text-center">
                              <h3 class="text-3xl font-bold text-indigo-700">${currentScore}</h3>
                              <p class="italic text-gray-600">${statusText}</p>
@@ -258,71 +260,34 @@ async function refreshModalData() {
 
     if (tab === "odds") {
       const all = details.oddsAll?.markets || [];
-      const win = details.winningOdds || {};
-      
-      // Yardımcı fonksiyon: Bir market içindeki seçeneğin oranını akıllıca bulur.
       const getOdds = (market, choiceName) => {
           const choice = market?.choices?.find(c => c.name === choiceName);
           if (!choice) return "-";
-
-          // Öncelik 1: Direkt ondalık değer varsa onu kullan (en güvenilir yöntem).
           if (choice.decimalValue) {
               const decVal = parseFloat(choice.decimalValue);
               if (!isNaN(decVal)) return decVal.toFixed(2);
           }
-
-          // Öncelik 2: Kesirli değeri ondalığa çevir.
           const f = choice.fractionalValue;
           if (!f || typeof f !== "string" || !f.includes("/")) return f || "-";
           const [a, b] = f.split("/").map(Number);
           return b ? (1 + a / b).toFixed(2) : (f || "-");
       };
-
       const liveMarket = all.find(m => m.isLive && m.marketName === "Full time");
       const preMarket = all.find(m => !m.isLive && m.marketName === "Full time");
-
       let html = `<div class="space-y-6">`;
-      
-      // Canlı Oranları Göster
       const liveHomeOdds = getOdds(liveMarket, "1");
       const liveAwayOdds = getOdds(liveMarket, "2");
-      
       if (liveHomeOdds !== "-") {
-        html += `<h4 class="text-xl font-bold text-green-700">🟢 Canlı Bahis Oranları</h4>
-                 <div class="grid grid-cols-2 gap-3">
-                   <div class="bg-green-100 p-4 text-center rounded-lg">
-                     <div class="font-semibold">${eventData.homeTeam?.name}</div>
-                     <div class="text-2xl font-extrabold">${liveHomeOdds}</div>
-                   </div>
-                   <div class="bg-green-100 p-4 text-center rounded-lg">
-                     <div class="font-semibold">${eventData.awayTeam?.name}</div>
-                     <div class="text-2xl font-extrabold">${liveAwayOdds}</div>
-                   </div>
-                 </div>`;
+        html += `<h4 class="text-xl font-bold text-green-700">🟢 Canlı Bahis Oranları</h4><div class="grid grid-cols-2 gap-3"><div class="bg-green-100 p-4 text-center rounded-lg"><div class="font-semibold">${eventData.homeTeam?.name}</div><div class="text-2xl font-extrabold">${liveHomeOdds}</div></div><div class="bg-green-100 p-4 text-center rounded-lg"><div class="font-semibold">${eventData.awayTeam?.name}</div><div class="text-2xl font-extrabold">${liveAwayOdds}</div></div></div>`;
       }
-
-      // Maç Önü Oranlarını Göster
       const preHomeOdds = getOdds(preMarket, "1");
       const preAwayOdds = getOdds(preMarket, "2");
-
       if (preHomeOdds !== "-") {
-        html += `<h4 class="text-xl font-bold text-indigo-700 mt-4">🕓 Maç Önü Oranları</h4>
-                 <div class="grid grid-cols-2 gap-3">
-                   <div class="bg-indigo-50 p-4 text-center rounded-lg">
-                     <div class="font-semibold">${eventData.homeTeam?.name}</div>
-                     <div class="text-2xl font-extrabold">${preHomeOdds}</div>
-                   </div>
-                   <div class="bg-indigo-50 p-4 text-center rounded-lg">
-                     <div class="font-semibold">${eventData.awayTeam?.name}</div>
-                     <div class="text-2xl font-extrabold">${preAwayOdds}</div>
-                   </div>
-                 </div>`;
+        html += `<h4 class="text-xl font-bold text-indigo-700 mt-4">🕓 Maç Önü Oranları</h4><div class="grid grid-cols-2 gap-3"><div class="bg-indigo-50 p-4 text-center rounded-lg"><div class="font-semibold">${eventData.homeTeam?.name}</div><div class="text-2xl font-extrabold">${preHomeOdds}</div></div><div class="bg-indigo-50 p-4 text-center rounded-lg"><div class="font-semibold">${eventData.awayTeam?.name}</div><div class="text-2xl font-extrabold">${preAwayOdds}</div></div></div>`;
       }
-
       if (liveHomeOdds === "-" && preHomeOdds === "-") {
           html += "<p>💰 Bu etkinlik için oran bulunamadı.</p>";
       }
-      
       html += `</div>`;
       content.innerHTML = html;
       return;
@@ -358,7 +323,7 @@ async function refreshModalData() {
     }
 
     content.innerHTML = `<div class="flex flex-col items-center justify-center py-10 text-gray-600"><div class="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-indigo-600 mb-3"></div><p>Oyuncu bilgileri yükleniyor...</p></div>`;
-    
+
     try {
       const [profileRes, matchesRes, rankRes] = await Promise.all([
         fetch(`/api/player/${teamId}`),
@@ -366,13 +331,13 @@ async function refreshModalData() {
         fetch(`/api/player/${teamId}/rankings`)
       ]);
       const [profileData, matchesData, rankData] = await Promise.all([profileRes.json(), matchesRes.json(), rankRes.json()]);
-      
+
       playerDataCache[teamId] = {
         profile: profileData,
         matches: matchesData,
         rankings: rankData?.rankings || []
       };
-      
+
       loadPlayerTab("profile", teamId);
 
     } catch (error) {
@@ -392,11 +357,12 @@ async function refreshModalData() {
     
     function belongsToPlayer(teamObj, playerObj, playerId) {
         if (!teamObj || !playerObj) return false;
-        if (teamObj.id === playerId) return true;
-        const pName = (playerObj.fullName || playerObj.name || "").toLowerCase();
-        const pLast = pName.split(" ").filter(Boolean).slice(-1)[0] || "";
-        const tName = (teamObj.name || "").toLowerCase();
-        return (!!pLast && tName.includes(pLast));
+        if (teamObj.id && playerId && teamObj.id === playerId) return true;
+        const teamName = (teamObj.name || "").toLowerCase();
+        const playerName = (playerObj.name || "").toLowerCase();
+        if (!teamName || !playerName) return false;
+        const nameParts = playerName.replace(/,/g, '').split(' ');
+        return nameParts.some(part => part.length > 2 && teamName.includes(part));
     }
 
     if (tab === "profile") {
@@ -405,61 +371,24 @@ async function refreshModalData() {
         const info = data.team?.playerTeamInfo || {};
         const country = data.team?.country?.name || "Bilinmiyor";
         document.getElementById("playerCountry").textContent = country;
-
         const official = rankings.find(r => r.type === 5 || r.rankingClass === "team");
         const live = rankings.find(r => r.type === 7 || r.rankingClass === "livetennis");
         const utr = rankings.find(r => r.type === 34 || r.rankingClass === "utr");
-        
         const officialRanking = official?.ranking ?? "-";
         const officialPoints = official?.points ?? "-";
         const liveRanking = live?.ranking ?? "-";
         const livePoints = live?.points ?? "-";
         const utrRanking = utr?.ranking ?? "-";
         const utrPoints = utr?.points?.toFixed ? utr.points.toFixed(2) : (utr?.points ?? "-");
-
-        content.innerHTML = `
-        <div class="space-y-6">
-          <div class="bg-gradient-to-r from-purple-100 to-pink-50 border-l-4 border-purple-400 rounded-xl p-4 shadow-sm">
-            <h4 class="text-lg font-bold text-purple-700">🎾 Oyuncu Bilgileri</h4>
-            <div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700">
-              <p><b>Doğum Yeri:</b> ${info.birthplace || "-"}</p>
-              <p><b>Yaşadığı Yer:</b> ${info.residence || "-"}</p>
-              <p><b>Boy:</b> ${info.height ? info.height + " m" : "-"}</p>
-              <p><b>Kilo:</b> ${info.weight ? info.weight + " kg" : "-"}</p>
-              <p><b>El Tercihi:</b> ${info.plays || "-"}</p>
-              <p><b>Profesyonel Olma:</b> ${info.turnedPro || "-"}</p>
-              <p><b>Kariyer Kazancı:</b> €${info.prizeTotal?.toLocaleString?.() || "-"}</p>
-            </div>
-          </div>
-          <div class="bg-gradient-to-r from-yellow-100 to-yellow-50 border-l-4 border-yellow-400 rounded-xl p-4 shadow-sm">
-            <h4 class="text-lg font-bold text-yellow-700">🏆 Resmi Sıralama</h4>
-            <div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700">
-              <p><b>Sıralama:</b> ${officialRanking}</p>
-              <p><b>Puan:</b> ${officialPoints}</p>
-            </div>
-          </div>
-          <div class="bg-gradient-to-r from-green-100 to-green-50 border-l-4 border-green-400 rounded-xl p-4 shadow-sm">
-            <h4 class="text-lg font-bold text-green-700">📈 Canlı Sıralama</h4>
-            <div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700">
-              <p><b>Sıralama:</b> ${liveRanking}</p>
-              <p><b>Puan:</b> ${livePoints}</p>
-            </div>
-          </div>
-          <div class="bg-gradient-to-r from-blue-100 to-blue-50 border-l-4 border-blue-400 rounded-xl p-4 shadow-sm">
-            <h4 class="text-lg font-bold text-blue-700">🌍 UTR Sıralaması</h4>
-            <div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700">
-              <p><b>Sıralama:</b> ${utrRanking}</p>
-              <p><b>Puan:</b> ${utrPoints}</p>
-            </div>
-          </div>
-        </div>`;
+        content.innerHTML = `<div class="space-y-6"><div class="bg-gradient-to-r from-purple-100 to-pink-50 border-l-4 border-purple-400 rounded-xl p-4 shadow-sm"><h4 class="text-lg font-bold text-purple-700">🎾 Oyuncu Bilgileri</h4><div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700"><p><b>Doğum Yeri:</b> ${info.birthplace || "-"}</p><p><b>Yaşadığı Yer:</b> ${info.residence || "-"}</p><p><b>Boy:</b> ${info.height ? info.height + " m" : "-"}</p><p><b>Kilo:</b> ${info.weight ? info.weight + " kg" : "-"}</p><p><b>El Tercihi:</b> ${info.plays || "-"}</p><p><b>Profesyonel Olma:</b> ${info.turnedPro || "-"}</p><p><b>Kariyer Kazancı:</b> €${info.prizeTotal?.toLocaleString?.() || "-"}</p></div></div><div class="bg-gradient-to-r from-yellow-100 to-yellow-50 border-l-4 border-yellow-400 rounded-xl p-4 shadow-sm"><h4 class="text-lg font-bold text-yellow-700">🏆 Resmi Sıralama</h4><div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700"><p><b>Sıralama:</b> ${officialRanking}</p><p><b>Puan:</b> ${officialPoints}</p></div></div><div class="bg-gradient-to-r from-green-100 to-green-50 border-l-4 border-green-400 rounded-xl p-4 shadow-sm"><h4 class="text-lg font-bold text-green-700">📈 Canlı Sıralama</h4><div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700"><p><b>Sıralama:</b> ${liveRanking}</p><p><b>Puan:</b> ${livePoints}</p></div></div><div class="bg-gradient-to-r from-blue-100 to-blue-50 border-l-4 border-blue-400 rounded-xl p-4 shadow-sm"><h4 class="text-lg font-bold text-blue-700">🌍 UTR Sıralaması</h4><div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700"><p><b>Sıralama:</b> ${utrRanking}</p><p><b>Puan:</b> ${utrPoints}</p></div></div></div>`;
     }
 
     if (tab === "matches") {
         const data = cachedData.matches;
         const events = (data.events || []).sort((a, b) => b.startTimestamp - a.startTimestamp).slice(0, 10);
         if (!events.length) { content.innerHTML = "<p>🎾 Son 10 maça ait veri bulunamadı.</p>"; return; }
-        const playerTeam = data.team || {};
+        const playerInfo = cachedData.profile?.team || {};
+        const playerTeam = Object.keys(playerInfo).length ? playerInfo : (data.team || {});
         const cards = events.map(ev => {
             const playerIsHome = belongsToPlayer(ev.homeTeam, playerTeam, teamId);
             const playerIsAway = belongsToPlayer(ev.awayTeam, playerTeam, teamId);
@@ -469,20 +398,7 @@ async function refreshModalData() {
             const kazandi = (ev.winnerCode === 1 && playerIsHome) || (ev.winnerCode === 2 && playerIsAway);
             const tarih = ev.startTimestamp ? new Date(ev.startTimestamp * 1000).toLocaleDateString("tr-TR", { day: "2-digit", month: "short", year: "numeric" }) : "-";
             const sonucHtml = isFinished ? (kazandi ? `<span class="text-green-600 font-semibold">Kazandı</span>` : `<span class="text-red-600 font-semibold">Kaybetti</span>`) : `<span class="text-gray-500 italic">${ev.status?.description || ""}</span>`;
-
-            return `
-            <div class="bg-white border rounded-xl p-4">
-              <div class="flex justify-between items-center mb-2">
-                <h4 class="text-indigo-700 font-semibold text-sm">${ev.tournament?.name || "-"}</h4>
-                <span class="text-gray-500 text-xs">${tarih}</span>
-              </div>
-              <div class="flex items-center justify-between text-sm">
-                <span class="font-semibold ${playerIsHome ? 'text-blue-700' : ''}">${ev.homeTeam?.name || "-"}</span>
-                <span class="font-bold text-lg">${hs} - ${as}</span>
-                <span class="font-semibold ${playerIsAway ? 'text-orange-600' : ''}">${ev.awayTeam?.name || "-"}</span>
-              </div>
-              <div class="text-right mt-2 text-xs">${sonucHtml}</div>
-            </div>`;
+            return `<div class="bg-white border rounded-xl p-4"><div class="flex justify-between items-center mb-2"><h4 class="text-indigo-700 font-semibold text-sm">${ev.tournament?.name || "-"}</h4><span class="text-gray-500 text-xs">${tarih}</span></div><div class="flex items-center justify-between text-sm"><span class="font-semibold ${playerIsHome ? 'text-blue-700' : ''}">${ev.homeTeam?.name || "-"}</span><span class="font-bold text-lg">${hs} - ${as}</span><span class="font-semibold ${playerIsAway ? 'text-orange-600' : ''}">${ev.awayTeam?.name || "-"}</span></div><div class="text-right mt-2 text-xs">${sonucHtml}</div></div>`;
         }).join("");
         content.innerHTML = `<h4 class="text-lg font-bold mb-3">Son 10 Maç</h4><div class="grid sm:grid-cols-2 gap-3">${cards}</div>`;
     }
@@ -496,24 +412,11 @@ async function refreshModalData() {
       const d = await r.json();
       if (!d.events?.length) { status.textContent = "Şu an canlı maç yok."; return; }
       status.textContent = ""; last.textContent = "Son güncelleme: " + new Date().toLocaleTimeString("tr-TR");
-      
       cnt.innerHTML = "";
       d.events.forEach(e => {
         const card = document.createElement("div");
         card.className = "bg-white rounded-2xl shadow-lg overflow-hidden hover:shadow-2xl hover:-translate-y-1 transform transition duration-300 cursor-pointer";
-        card.innerHTML = `
-          <div class="bg-gradient-to-r from-indigo-600 to-purple-600 p-3 flex items-center justify-center gap-3">
-            <img src="${getTournamentLogo(e)}" class="w-10 h-10 rounded-full border-2 bg-white object-cover">
-            <span class="text-white font-semibold text-sm truncate max-w-[200px]">${e.tournament?.name || "?"}</span>
-          </div>
-          <div class="p-6 text-center">
-            <div class="flex items-center justify-between mb-4">
-              <span class="font-semibold text-blue-700">${e.homeTeam?.name || "-"}</span>
-              <div class="mx-3 text-2xl font-extrabold text-indigo-700">${e.homeScore?.current ?? 0} - ${e.awayScore?.current ?? 0}</div>
-              <span class="font-semibold text-orange-600">${e.awayTeam?.name || "-"}</span>
-            </div>
-            <div class="text-sm text-gray-600 italic">Event ID: ${e.id}</div>
-          </div>`;
+        card.innerHTML = `<div class="bg-gradient-to-r from-indigo-600 to-purple-600 p-3 flex items-center justify-center gap-3"><img src="${getTournamentLogo(e)}" class="w-10 h-10 rounded-full border-2 bg-white object-cover"><span class="text-white font-semibold text-sm truncate max-w-[200px]">${e.tournament?.name || "?"}</span></div><div class="p-6 text-center"><div class="flex items-center justify-between mb-4"><span class="font-semibold text-blue-700">${e.homeTeam?.name || "-"}</span><div class="mx-3 text-2xl font-extrabold text-indigo-700">${e.homeScore?.current ?? 0} - ${e.awayScore?.current ?? 0}</div><span class="font-semibold text-orange-600">${e.awayTeam?.name || "-"}</span></div><div class="text-sm text-gray-600 italic">Event ID: ${e.id}</div></div>`;
         card.addEventListener("click", () => openModal(e));
         cnt.appendChild(card);
       });

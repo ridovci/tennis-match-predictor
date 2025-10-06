@@ -57,7 +57,7 @@ async def fetch_all_event_details(event_id: int, endpoints: List[str], timeout_s
                 except Exception as e:
                     logger.warning(f"Endpoint '{endpoint}' için evaluate hatası: {e}")
                     all_results.append({"error": f"Endpoint fetch failed for {endpoint}"})
-            
+
             await browser.close()
 
     except Exception as e:
@@ -128,4 +128,20 @@ async def fetch_rankings_via_page(team_id: int, timeout_sec: int = 20, headless:
     except Exception as e:
         logger.warning("fetch_rankings_via_page hata: %s", e)
         data = {"error": str(e)}
+    return data
+
+async def fetch_year_statistics(team_id: int, year: int, headless: bool = True) -> Dict[str, Any]:
+    """Bir oyuncunun belirli bir yıldaki istatistiklerini çeker."""
+    url = f"https://www.sofascore.com/api/v1/team/{team_id}/year-statistics/{year}"
+    data = {"statistics": []}
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            page = await browser.new_page()
+            await page.goto(url, timeout=20 * 1000)
+            content = await page.inner_text("pre, body")
+            await browser.close()
+            data = json.loads(content)
+    except Exception as e:
+        logger.warning(f"fetch_year_statistics (team_id: {team_id}, year: {year}) hata: {e}")
     return data
