@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import Any, Dict, Optional, List
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import time  # Zaman ölçümü için eklendi
 from functools import wraps  # Decorator için eklendi
 
@@ -25,6 +25,7 @@ try:
         fetch_player_matches,
         fetch_rankings_via_page,
         fetch_year_statistics,
+        fetch_scheduled_events_for_dates
     )
 except (ImportError, ModuleNotFoundError):
     print("UYARI: 'app.collector' bulunamadı. Lütfen script'in doğru dizinde olduğundan emin olun.")
@@ -86,9 +87,21 @@ async def get_player_stats_for_years(team_id: int, years: List[int]) -> Dict[str
 
 @timeit
 async def get_event_details(event_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Belirli bir maç ID'sinin temel bilgilerini, bugünün ve dünün planlanmış
+    maçları arasından arayarak bulur.
+    """
     print(f">>> {event_id} ID'li maçın temel bilgileri aranıyor...")
-    live_events_data = await fetch_live_events_via_page(headless=True)
-    for event in live_events_data.get("events", []):
+    
+    # Bugünün ve dünün tarihini al
+    today = datetime.now()
+    yesterday = today - timedelta(days=1)
+    dates_to_check = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
+    
+    # Planlanmış maçları collector'dan çek
+    scheduled_events_data = await fetch_scheduled_events_for_dates(dates_to_check, headless=True)
+    
+    for event in scheduled_events_data.get("events", []):
         if event.get("id") == event_id:
             print(">>> Maç bulundu!")
             return {
@@ -98,7 +111,8 @@ async def get_event_details(event_id: int) -> Optional[Dict[str, Any]]:
                 "away_team_name": event.get("awayTeam", {}).get("name"),
                 "ground_type": event.get("groundType"),
             }
-    print(">>> HATA: Canlı maçlar arasında bu ID'ye sahip bir maç bulunamadı.")
+            
+    print(f">>> HATA: Son 2 günün maçları arasında {event_id} ID'li bir maç bulunamadı.")
     return None
 
 @timeit
@@ -266,20 +280,20 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
     away_scores['tiebreak_psikolojisi'] = away_stats_all['tb_wins'] / away_stats_all['tb_played'] if away_stats_all['tb_played'] > 0 else 0.5
     return home_scores, away_scores
 
-async def main():
+async def get_match_prediction(event_id: int):
+    """
+    Verilen bir maç ID'si için tam bir TGS analizi yapar ve sonucu döndürür.
+    Bu fonksiyon, ana logic'i birleştirir ve dışarıdan çağrılabilir hale getirir.
+    """
     overall_start_time = time.time()
-    TEST_EVENT_ID = 14762081
-    event_info = await get_event_details(TEST_EVENT_ID)
-    if not event_info or not all(key in event_info for key in ["home_team_id", "away_team_id", "home_team_name", "away_team_name"]):
-        print("Oyuncu bilgileri alınamadı, script durduruluyor.")
-        return
-
-    all_data = {**event_info, **await get_pre_match_data(TEST_EVENT_ID, event_info["home_team_id"], event_info["away_team_id"])}
     
-    calc_start_time = time.time()
+    event_info = await get_event_details(event_id)
+    if not event_info or not all(key in event_info for key in ["home_team_id", "away_team_id", "home_team_name", "away_team_name"]):
+        return {"error": "Maçın temel bilgileri (oyuncu ID'leri vb.) alınamadı."}
+
+    all_data = {**event_info, **await get_pre_match_data(event_id, event_info["home_team_id"], event_info["away_team_id"])}
+    
     home_scores, away_scores = calculate_metric_scores(all_data, event_info["home_team_id"], event_info["away_team_id"], event_info["ground_type"])
-    calc_end_time = time.time()
-    print(f"[SÜRE: {calc_end_time - calc_start_time:.2f} saniye] - Fonksiyon 'calculate_metric_scores' tamamlandı.")
 
     home_tgs = sum(WEIGHTS[key] * home_scores.get(key, 0.5) for key in WEIGHTS)
     away_tgs = sum(WEIGHTS[key] * away_scores.get(key, 0.5) for key in WEIGHTS)
@@ -287,10 +301,41 @@ async def main():
     home_prior = home_tgs / total_tgs if total_tgs > 0 else 0.5
     away_prior = away_tgs / total_tgs if total_tgs > 0 else 0.5
 
+    print(f"\n[BİLGİ] {event_id} ID'li maç için TGS hesaplaması tamamlandı. Toplam süre: {time.time() - overall_start_time:.2f} saniye")
+
+    return {
+        "home_player_name": event_info["home_team_name"],
+        "away_player_name": event_info["away_team_name"],
+        "home_win_prob": home_prior,
+        "away_win_prob": away_prior,
+        "scores": {"home": home_scores, "away": away_scores},
+        "weights": WEIGHTS
+    }
+
+
+async def main():
+    # Test etmek için bir maç ID'si belirleyin (canlı, bitmiş veya gelecek olabilir)
+    TEST_EVENT_ID = 14844202
+    
+    prediction_result = await get_match_prediction(TEST_EVENT_ID)
+
+    if "error" in prediction_result:
+        print(f"HATA: {prediction_result['error']}")
+        return
+
+    # --- Sonuçları yazdırma ---
+    home_name = prediction_result["home_player_name"]
+    away_name = prediction_result["away_player_name"]
+    home_prior = prediction_result["home_win_prob"]
+    away_prior = prediction_result["away_win_prob"]
+    home_scores = prediction_result["scores"]["home"]
+    away_scores = prediction_result["scores"]["away"]
+    home_tgs = sum(WEIGHTS[key] * home_scores.get(key, 0.5) for key in WEIGHTS)
+    away_tgs = sum(WEIGHTS[key] * away_scores.get(key, 0.5) for key in WEIGHTS)
+
     print("\n\n" + "="*80)
     print(" " * 25 + "MAÇ ÖNCESİ GELİŞMİŞ ANALİZ SONUÇLARI")
     print("="*80)
-    home_name, away_name = event_info["home_team_name"], event_info["away_team_name"]
     print(f"{'Metrik (Ağırlık)':<28} | {'Ev Sahibi (' + home_name + ')':<25} | {'Deplasman (' + away_name + ')':<25}")
     print("-"*80)
     for key in sorted(WEIGHTS.keys()):
@@ -304,10 +349,6 @@ async def main():
     print("\n--- PRIOR OLASILIK (MAÇ ÖNCESİ KAZANMA İHTİMALİ) ---")
     print(f"Ev Sahibi ({home_name}) Kazanma Olasılığı: {home_prior:.2%}")
     print(f"Deplasman ({away_name}) Kazanma Olasılığı: {away_prior:.2%}")
-    print("="*80)
-
-    overall_end_time = time.time()
-    print(f"\nTOPLAM ÇALIŞMA SÜRESİ: {overall_end_time - overall_start_time:.2f} saniye")
     print("="*80)
 
 if __name__ == "__main__":

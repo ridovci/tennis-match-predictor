@@ -1,35 +1,38 @@
+# app/tgs_calculator.py
+
 import asyncio
 import json
 from typing import Any, Dict, Optional, List
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
+# Gerekli collector fonksiyonlarını import et
 try:
     from app.collector import (
-        fetch_live_events_via_page,
         fetch_all_event_details,
         fetch_player_matches,
         fetch_rankings_via_page,
         fetch_year_statistics,
+        fetch_scheduled_events_for_dates
     )
-except ImportError:
-    from collector import (
-        fetch_live_events_via_page,
-        fetch_all_event_details,
-        fetch_player_matches,
-        fetch_rankings_via_page,
-        fetch_year_statistics,
-    )
+except (ImportError, ModuleNotFoundError):
+    # Bu blok, script'i tek başına çalıştırırken veya collector bulunamadığında hata vermesini önler
+    print("UYARI: 'app.collector' bulunamadı. Sahte (mock) fonksiyonlar kullanılıyor.")
+    async def fetch_all_event_details(*args, **kwargs): return [{"error": "mock"}]*2
+    async def fetch_player_matches(team_id, page=0): return {"events": [], "hasNextPage": False}
+    async def fetch_rankings_via_page(*args, **kwargs): return {"rankings": []}
+    async def fetch_year_statistics(*args, **kwargs): return {"statistics": []}
+    async def fetch_scheduled_events_for_dates(*args, **kwargs): return {"events": []}
 
-# --- Konfigürasyon ve Model Ağırlıkları ---
+# --- Model Ağırlıkları ---
 WEIGHTS = {
     "oran": 0.25,
     "sıralama": 0.10,
     "genel_form": 0.05,
     "son_10_mac_formu": 0.05,
     "h2h": 0.075,
-    "sentiment": 0.025,
-    "yuzey_formu": 0.10,
+    "sentiment": 0.05,
+    "yuzey_formu": 0.075,
     "rakip_kalitesi": 0.10,
     "tiebreak_psikolojisi": 0.05,
     "servis_hakimiyeti": 0.10,
@@ -53,6 +56,7 @@ def fractional_to_decimal(fractional: str) -> float:
     except (ValueError, TypeError):
         return 2.0
 
+# --- Veri Toplama Fonksiyonları ---
 async def get_player_stats_for_years(team_id: int, years: List[int]) -> Dict[str, List]:
     tasks = [fetch_year_statistics(team_id, year) for year in years]
     results = await asyncio.gather(*tasks)
@@ -60,8 +64,13 @@ async def get_player_stats_for_years(team_id: int, years: List[int]) -> Dict[str
     return {"all_stats": all_yearly_stats}
 
 async def get_event_details(event_id: int) -> Optional[Dict[str, Any]]:
-    live_events_data = await fetch_live_events_via_page(headless=True)
-    for event in live_events_data.get("events", []):
+    today = datetime.now()
+    yesterday = today - timedelta(days=1)
+    dates_to_check = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
+    
+    scheduled_events_data = await fetch_scheduled_events_for_dates(dates_to_check, headless=True)
+    
+    for event in scheduled_events_data.get("events", []):
         if event.get("id") == event_id:
             return {
                 "home_team_id": event.get("homeTeam", {}).get("id"),
@@ -107,6 +116,7 @@ async def get_pre_match_data(event_id: int, home_team_id: int, away_team_id: int
 
     return {"match_details": match_details, "home_player": home_data, "away_player": away_data}
 
+# --- Skor Hesaplama Fonksiyonu ---
 def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_id: int, ground_type: str) -> tuple[Dict[str, float], Dict[str, float]]:
     home_scores, away_scores = {}, {}
 
@@ -114,6 +124,7 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
         surface_stats = [s for s in all_stats if s.get("groundType") == surface]
         stats_to_aggregate = surface_stats if surface_stats else all_stats
         if not stats_to_aggregate: return defaultdict(float)
+        
         aggregated = defaultdict(float)
         for stat_group in stats_to_aggregate:
             for key, value in stat_group.items():
@@ -127,6 +138,7 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
         total = home_val + away_val
         return (0.5, 0.5) if total <= 0 else (home_val / total, away_val / total)
 
+    # Metrik hesaplamaları (servis, kritik anlar, hücum vb.)
     home_serve_power = (home_yearly.get('aces', 0) * 1.5 + home_yearly.get('firstServePointsScored', 0) - home_yearly.get('doubleFaults', 0) * 2)
     away_serve_power = (away_yearly.get('aces', 0) * 1.5 + away_yearly.get('firstServePointsScored', 0) - away_yearly.get('doubleFaults', 0) * 2)
     home_scores['servis_hakimiyeti'], away_scores['servis_hakimiyeti'] = calculate_score(home_serve_power, away_serve_power)
@@ -157,7 +169,7 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
     except Exception: home_scores['sıralama'], away_scores['sıralama'] = 0.5, 0.5
 
     try:
-        pre_market = next(m for m in data['match_details']['oddsAll']['markets'] if not m.get('isLive') and m.get('marketName') == 'Full time')
+        pre_market = next(m for m in data['match_details']['oddsAll'].get('markets', []) if not m.get('isLive') and m.get('marketName') == 'Full time')
         home_odds = fractional_to_decimal(next(c for c in pre_market['choices'] if c['name'] == '1').get('fractionalValue', "2.0"))
         away_odds = fractional_to_decimal(next(c for c in pre_market['choices'] if c['name'] == '2').get('fractionalValue', "2.0"))
         home_prob, away_prob = 1 / home_odds, 1 / away_odds
@@ -165,7 +177,7 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
     except Exception: home_scores['oran'], away_scores['oran'] = 0.5, 0.5
 
     try:
-        votes = data['match_details']['votes']['vote']
+        votes = data['match_details']['votes'].get('vote', {})
         home_scores['sentiment'], away_scores['sentiment'] = calculate_score(votes.get('vote1', 0), votes.get('vote2', 0))
     except Exception: home_scores['sentiment'], away_scores['sentiment'] = 0.5, 0.5
     
@@ -190,8 +202,7 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
                 else:
                     surface_h2h_away_wins += 1
         home_scores['h2h'], away_scores['h2h'] = calculate_score(surface_h2h_home_wins, surface_h2h_away_wins)
-    except Exception:
-        home_scores['h2h'], away_scores['h2h'] = 0.5, 0.5
+    except Exception: home_scores['h2h'], away_scores['h2h'] = 0.5, 0.5
 
     def get_stats_from_matches(matches: List[Dict], player_id: int, player_name: str, limit: Optional[int] = None):
         if limit and len(matches) > limit: matches = matches[:limit]
@@ -200,9 +211,8 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
         for event in matches:
             stats['total'] += 1
             winner_code = event.get('winnerCode')
-            home_team_name, away_team_name = event.get('homeTeam', {}).get('name', '').lower(), event.get('awayTeam', {}).get('name', '').lower()
-            is_home = (event.get('homeTeam', {}).get('id') == player_id) or (player_last_name and player_last_name in home_team_name)
-            is_away = (event.get('awayTeam', {}).get('id') == player_id) or (player_last_name and player_last_name in away_team_name)
+            is_home = (event.get('homeTeam', {}).get('id') == player_id)
+            is_away = (event.get('awayTeam', {}).get('id') == player_id)
             is_winner = (is_home and winner_code == 1) or (is_away and winner_code == 2)
             if is_winner:
                 stats['wins'] += 1
@@ -242,12 +252,14 @@ def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_i
 
     return home_scores, away_scores
 
-
+# --- Ana Çağrılabilir Fonksiyon ---
 async def get_match_prediction(event_id: int) -> Dict[str, Any]:
     """Ana tahmin fonksiyonu: Tüm verileri toplar, hesaplar ve sonucu döndürür."""
+    
+    # Fonksiyona parametre olarak gelen event_id'nin kullanıldığından emin olun.
     event_info = await get_event_details(event_id)
     if not event_info or not all(key in event_info for key in ["home_team_id", "away_team_id"]):
-        return {"error": "Maç detayları alınamadı veya maç canlı değil."}
+        return {"error": f"{event_id} ID'li maç detayı bulunamadı."}
 
     all_data = {**event_info, **await get_pre_match_data(event_id, event_info["home_team_id"], event_info["away_team_id"])}
     

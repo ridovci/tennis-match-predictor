@@ -11,13 +11,15 @@ import requests
 try:
     from app.collector import (
         fetch_live_events_via_page, fetch_all_event_details, fetch_player_profile,
-        fetch_player_matches, fetch_rankings_via_page
+        fetch_player_matches, fetch_rankings_via_page, fetch_scheduled_events_for_dates,
+        fetch_bulk_odds_for_date
     )
     from app.tgs_calculator import get_match_prediction
 except ImportError:
     from collector import (
         fetch_live_events_via_page, fetch_all_event_details, fetch_player_profile,
-        fetch_player_matches, fetch_rankings_via_page
+        fetch_player_matches, fetch_rankings_via_page, fetch_scheduled_events_for_dates,
+        fetch_bulk_odds_for_date
     )
     from tgs_calculator import get_match_prediction
 
@@ -30,6 +32,8 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 LIVE_CACHE = {"data": {"events": []}, "ts": 0}
+ALL_CACHE = {"data": {"events": []}, "ts": 0}
+ODDS_CACHE = {"data": {}, "key": "", "ts": 0}
 
 async def _get_live_events_cached(ttl: int = 15):
     now = asyncio.get_event_loop().time()
@@ -45,6 +49,25 @@ async def _get_live_events_cached(ttl: int = 15):
         LIVE_CACHE["ts"] = now
     return data
 
+async def _get_all_events_cached(ttl: int = 60):
+    now = asyncio.get_event_loop().time()
+    if (now - ALL_CACHE["ts"]) < ttl and ALL_CACHE["data"].get("events"):
+        return ALL_CACHE["data"]
+    try:
+        # Sadece bugün için planlanan tüm maçları toplayalım
+        from datetime import datetime
+        # Yerel güne göre filtrele (UTC yerine)
+        today = datetime.now().date()
+        dates = [today.strftime("%Y-%m-%d")]
+        data = await fetch_scheduled_events_for_dates(dates)
+    except Exception as e:
+        print("fetch_all_events hata:", e)
+        return ALL_CACHE["data"]
+    if data and data.get("events"):
+        ALL_CACHE["data"] = data
+        ALL_CACHE["ts"] = now
+    return data
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -55,6 +78,58 @@ async def api_live_matches():
     if not data or not data.get("events"):
         return JSONResponse(content={"events": []}, status_code=503)
     return JSONResponse(content=data)
+
+@app.get("/api/matches")
+async def api_matches(filter: str = "live"):
+    """
+    filter=live => sadece canlı
+    filter=finished => bugün bitenler
+    filter=upcoming => bugün başlayacak olanlar
+    filter=all => bugünle ilgili tüm planlılar (finished+upcoming) veya canlılar birleşik değil; front ayrı çağırır
+    """
+    try:
+        if filter == "live":
+            data = await _get_live_events_cached()
+            return JSONResponse(content=data or {"events": []})
+
+        # Scheduled (today) üzerinden filtreleme
+        scheduled = await _get_all_events_cached()
+        events = scheduled.get("events", []) if scheduled else []
+        if filter == "finished":
+            # Bugün başlayıp biten maçlar
+            filtered = [e for e in events if (e.get("status", {}).get("type") == "finished")]
+        elif filter == "upcoming":
+            # Başlamamış ve bugün başlayacak maçlar
+            import time
+            now_ts = int(time.time())
+            filtered = [
+                e for e in events
+                if e.get("status", {}).get("type") in ("notstarted", "scheduled") and (e.get("startTimestamp") or 0) >= now_ts
+            ]
+        else:
+            filtered = events
+        return JSONResponse(content={"events": filtered})
+    except Exception as e:
+        print("api_matches hata:", e)
+        return JSONResponse(content={"events": []}, status_code=500)
+
+@app.get("/api/odds/date/{date}")
+async def api_bulk_odds_by_date(date: str):
+    """Belirli bir tarih için toplu oranlar (cache'li). date: YYYY-MM-DD"""
+    try:
+        now = asyncio.get_event_loop().time()
+        cache_key = date
+        if ODDS_CACHE["key"] == cache_key and (now - ODDS_CACHE["ts"]) < 120 and ODDS_CACHE["data"]:
+            return JSONResponse(content=ODDS_CACHE["data"])    
+        data = await fetch_bulk_odds_for_date(date)
+        if data:
+            ODDS_CACHE["data"] = data
+            ODDS_CACHE["key"] = cache_key
+            ODDS_CACHE["ts"] = now
+        return JSONResponse(content=data or {})
+    except Exception as e:
+        print("api_bulk_odds_by_date hata:", e)
+        return JSONResponse(content={}, status_code=500)
 
 @app.get("/api/match-details/{event_id}")
 async def api_match_details(event_id: int):
@@ -152,11 +227,17 @@ def get_active_tournament_stats(team_id: int):
 @app.get("/api/match-prediction/{event_id}")
 async def api_match_prediction(event_id: int):
     try:
+        # Bu fonksiyon, tgs_calculator'dan gelen fonksiyonu doğrudan çağırmalıdır.
         prediction_data = await get_match_prediction(event_id)
+        
         if "error" in prediction_data:
             return JSONResponse(content=prediction_data, status_code=404)
+        
         return JSONResponse(content=prediction_data)
-    except Exception as e:
-        print(f"api_match_prediction (event_id: {event_id}) genel hata:", e)
-        return JSONResponse(content={"error": "Tahmin hesaplanırken beklenmedik bir hata oluştu.", "detail": str(e)}, status_code=500)
 
+    except Exception as e:
+        print(f"api_match_prediction (event_id: {event_id}) genel hata: {e}")
+        return JSONResponse(
+            content={"error": "Tahmin hesaplanırken beklenmedik bir sunucu hatası oluştu.", "detail": str(e)}, 
+            status_code=500
+        )

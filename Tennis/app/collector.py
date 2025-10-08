@@ -130,6 +130,38 @@ async def fetch_rankings_via_page(team_id: int, timeout_sec: int = 20, headless:
         data = {"error": str(e)}
     return data
 
+async def fetch_scheduled_events_for_dates(dates: List[str], timeout_sec: int = 20, headless: bool = True) -> Dict[str, Any]:
+    """Verilen ISO tarih listesi (YYYY-MM-DD) için planlanan tenis maçlarını döndürür.
+
+    Sofascore endpoint: /api/v1/sport/tennis/scheduled-events/{date}
+    """
+    all_events: List[Dict[str, Any]] = []
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            page = await browser.new_page()
+            # Cookie/state oluşsun
+            await page.goto("https://www.sofascore.com/tr/tenis", wait_until="domcontentloaded", timeout=timeout_sec * 1000)
+            for d in dates:
+                api_url = f"https://www.sofascore.com/api/v1/sport/tennis/scheduled-events/{d}"
+                try:
+                    captured = await page.evaluate(
+                        f"""() => fetch("{api_url}")
+                            .then(r => r.json())
+                            .catch(() => null)"""
+                    )
+                    events = (captured or {}).get("events", [])
+                    if isinstance(events, list):
+                        all_events.extend(events)
+                except Exception as e:
+                    logger.warning("scheduled-events evaluate hata (%s): %s", d, e)
+            await browser.close()
+    except Exception as e:
+        logger.warning("fetch_scheduled_events_for_dates genel hata: %s", e)
+    # Aynı event id'leri tekilleştir
+    unique = {e.get("id"): e for e in all_events if e and e.get("id")}
+    return {"events": list(unique.values())}
+
 async def fetch_year_statistics(team_id: int, year: int, headless: bool = True) -> Dict[str, Any]:
     """Bir oyuncunun belirli bir yıldaki istatistiklerini çeker."""
     url = f"https://www.sofascore.com/api/v1/team/{team_id}/year-statistics/{year}"
@@ -145,3 +177,39 @@ async def fetch_year_statistics(team_id: int, year: int, headless: bool = True) 
     except Exception as e:
         logger.warning(f"fetch_year_statistics (team_id: {team_id}, year: {year}) hata: {e}")
     return data
+
+
+async def fetch_bulk_odds_for_date(date_str: str, timeout_sec: int = 25, headless: bool = True) -> Dict[str, Any]:
+    """
+    Belirli bir tarih için (YYYY-MM-DD) toplu oranları döndürür.
+    API'dan gelen {id: odds_data} formatındaki objeyi, [{id:..., ...}, {...}] formatındaki listeye çevirir.
+    """
+    api_url = f"https://www.sofascore.com/api/v1/sport/tennis/odds/1/{date_str}"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            page = await browser.new_page()
+            await page.goto(api_url, wait_until="domcontentloaded", timeout=timeout_sec * 1000)
+            content = await page.inner_text("pre, body")
+            await browser.close()
+            
+            parsed_json = json.loads(content)
+            
+            if isinstance(parsed_json, dict) and "odds" in parsed_json and isinstance(parsed_json["odds"], dict):
+                odds_dict = parsed_json["odds"]
+                
+                odds_list = []
+                for event_id, odds_data in odds_dict.items():
+                    odds_data['id'] = int(event_id) 
+                    odds_list.append(odds_data)
+                
+                logger.info(f"{date_str} için {len(odds_list)} adet oran verisi başarıyla formatlandı.")
+                return {"odds": odds_list}
+            else:
+                logger.warning(f"Odds verisi beklenen {{\"odds\": {{...}} }} formatında değil: {api_url}")
+                return {"odds": []}
+
+    except Exception as e:
+        logger.error(f"fetch_bulk_odds_for_date KRİTİK HATA: {e}")
+        return {"odds": []}
+        
