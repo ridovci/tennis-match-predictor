@@ -72,7 +72,7 @@
     <footer class="mt-8 border-t border-slate-200/60 py-6">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-[11px] text-slate-500 flex items-center justify-between">
         <span>© 2025 Tenis Karar Destek Sistemi</span>
-        <span>Yapay zeka hata yapabilir.</span>
+        <span> </span>
       </div>
     </footer>
   </div>
@@ -127,6 +127,11 @@
   // Odds cache for current day
   let oddsMap = null; // { [eventId]: { preHome, preAway, liveHome, liveAway } }
   let oddsMapDate = "";
+  // Predictions map for today (from server JSON)
+  let predMap = null; // { [eventId]: { home_win_prob, away_win_prob, ... } }
+  // Prediction prefetch cache (front-end, very short lived)
+  const predictionCache = new Map(); // key: eventId, value: {ts, data}
+  const PRED_CACHE_TTL_MS = 60000; // 60s
 
   function getLocalDateISO() {
     const d = new Date();
@@ -223,6 +228,19 @@
     }
   }
 
+  async function ensurePredictionsForToday() {
+    const today = getLocalDateISO();
+    if (predMap && predMap.__date === today) return;
+    try {
+      const r = await fetch(`/api/predictions/today`);
+      if (!r.ok) { predMap = { __date: today }; return; }
+      const data = await r.json();
+      predMap = Object.assign({ __date: today }, data || {});
+    } catch (e) {
+      predMap = { __date: today };
+    }
+  }
+
   function extractOddsFromMarkets(markets) {
     if (!Array.isArray(markets)) return { preHome: '-', preAway: '-', liveHome: '-', liveAway: '-' };
     const isMatchName = (n) => {
@@ -311,7 +329,18 @@ async function refreshModalData() {
     subtitle.textContent = eventData.tournament?.name || "";
     tabContent.innerHTML = `<div class="flex flex-col items-center justify-center py-10 text-gray-600"><div class="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-indigo-600 mb-3"></div><p>Maç detayları yükleniyor...</p></div>`;
     try {
-        const res = await fetch(`/api/match-details/${eventData.id}`);
+        // details ve prediction'ı paralel başlat (prediction tabına geçişi hızlandırmak için)
+        const detailsPromise = fetch(`/api/match-details/${eventData.id}`);
+        // front cache: varsa ve taze ise kullanacağız; yoksa arkadan başlat
+        const predCached = predictionCache.get(eventData.id);
+        if (!predCached || (Date.now() - predCached.ts) > PRED_CACHE_TTL_MS) {
+          fetch(`/api/match-prediction/${eventData.id}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d) predictionCache.set(eventData.id, { ts: Date.now(), data: d }); })
+            .catch(()=>{});
+        }
+
+        const res = await detailsPromise;
         if (!res.ok) throw new Error("Detaylar alınamadı");
         const details = await res.json();
         currentEventData = eventData; currentEventDetails = details;
@@ -354,11 +383,26 @@ async function refreshModalData() {
         const statusElement = document.getElementById("loading-status");
         const interval = setInterval(() => { stepIndex++; if (stepIndex < loadingSteps.length) { statusElement.textContent = loadingSteps[stepIndex]; } else { clearInterval(interval); } }, 2000);
         try {
-            const res = await fetch(`/api/match-prediction/${eventData.id}`);
+            // Önce front cache'e bak
+            let data = null;
+            const cached = predictionCache.get(eventData.id);
+            if (cached && (Date.now() - cached.ts) <= PRED_CACHE_TTL_MS) {
+              data = cached.data;
+            } else {
+              const res = await fetch(`/api/match-prediction/${eventData.id}`);
+              if (!res.ok) throw new Error(`Sunucu hatası: ${res.status}`);
+              data = await res.json();
+              if (data && !data.error) predictionCache.set(eventData.id, { ts: Date.now(), data });
+            }
             clearInterval(interval);
-            if (!res.ok) throw new Error(`Sunucu hatası: ${res.status}`);
-            const data = await res.json();
             if (data.error) { content.innerHTML = `<p class="text-red-500">${data.error}</p>`; return; }
+            // Pre-match etiketi (T-xx)
+            let preTag = "Pre-match";
+            const ts = Number(eventData.startTimestamp || 0) * 1000;
+            if (ts > 0) {
+              const mins = Math.max(0, Math.round((ts - Date.now()) / 60000));
+              preTag = mins > 0 ? `Pre-match (T-${mins})` : "Pre-match";
+            }
             const homeProb = (data.home_win_prob * 100).toFixed(1);
             const awayProb = (data.away_win_prob * 100).toFixed(1);
             let tableRows = '';
@@ -376,6 +420,7 @@ async function refreshModalData() {
                             <span class="font-bold text-blue-700">${data.home_player_name}</span>
                             <span class="font-bold text-orange-600">${data.away_player_name}</span>
                         </div>
+                        <div class="mb-2 text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">${preTag}</div>
                         <div class="flex w-full h-8 bg-gray-200 rounded-full overflow-hidden">
                             <div class="flex items-center justify-center h-full bg-blue-600 text-white font-bold" style="width: ${homeProb}%">${homeProb}%</div>
                             <div class="flex items-center justify-center h-full bg-orange-500 text-white font-bold" style="width: ${awayProb}%">${awayProb}%</div>
@@ -592,7 +637,8 @@ async function refreshModalData() {
         console.time('matches+odds');
         const [r] = await Promise.all([
             fetch(endpoint),
-            ensureOddsForToday()
+            ensureOddsForToday(),
+            ensurePredictionsForToday()
         ]);
         console.timeEnd('matches+odds');
         const d = await r.json(); const events = Array.isArray(d.events) ? d.events : [];
@@ -666,6 +712,17 @@ async function refreshModalData() {
 
             const homeName = e.homeTeam?.name || '-'; 
             const awayName = e.awayTeam?.name || '-';
+            // Precomputed prediction badges (home/away)
+            let homePredBadge = '', awayPredBadge = '';
+            if (predMap) {
+                const p = predMap[String(e.id)];
+                if (p && typeof p.home_win_prob === 'number' && typeof p.away_win_prob === 'number') {
+                    const ph = Math.round(p.home_win_prob * 100);
+                    const pa = Math.round(p.away_win_prob * 100);
+                    homePredBadge = `<span class="ml-1 align-middle text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">${ph}%</span>`;
+                    awayPredBadge = `<span class="mr-1 align-middle text-[10px] px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-700 border border-orange-200">${pa}%</span>`;
+                }
+            }
             const statusBadge = isLive ? '<span class="text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full mr-2">CANLI</span>' : (isFinished ? '<span class="text-[10px] bg-red-500 text-white px-2 py-0.5 rounded-full mr-2">BİTTİ</span>' : '');
             
             const om = oddsMap ? oddsMap[e.id] : null;
@@ -678,15 +735,35 @@ async function refreshModalData() {
             const homeOddsDisplay = formatOdds(om?.liveHome || om?.preHome);
             const awayOddsDisplay = formatOdds(om?.liveAway || om?.preAway);
 
+            // Build TGS cell (desktop)
+            let tgsCell = '<div class="text-[11px] text-slate-400 italic">-</div>';
+            if (predMap) {
+                const p = predMap[String(e.id)];
+                if (p && typeof p.home_win_prob === 'number' && typeof p.away_win_prob === 'number') {
+                    const ph = Math.round(p.home_win_prob * 100);
+                    const pa = Math.round(p.away_win_prob * 100);
+                    tgsCell = `
+                      <div class="flex items-center justify-center">
+                        <div class="w-28 h-5 rounded-full bg-slate-200 overflow-hidden flex">
+                          <div class="h-full bg-blue-600 text-white text-[10px] flex items-center justify-center" style="width:${ph}%">${ph}%</div>
+                          <div class="h-full bg-orange-500 text-white text-[10px] flex items-center justify-center" style="width:${pa}%">${pa}%</div>
+                        </div>
+                      </div>`;
+                }
+            }
+
             rowsHtml += `
               <tr class="even:bg-slate-50/60 hover:bg-slate-50 cursor-pointer group" data-eid="${e.id}" tabindex="0">
+                <td class="px-3 sm:px-4 py-3 align-middle text-sm text-slate-600 whitespace-nowrap">${formattedDateTime}</td>
                 <td class="px-3 sm:px-4 py-3 align-middle">
                   <div class="flex items-center gap-3 min-w-0">
                     <img src="${getTournamentLogo(e)}" class="w-7 h-7 rounded-full border bg-white object-cover">
                     <div class="text-[12px] sm:text-sm text-slate-900 truncate">${e.tournament?.name || '?'}</div>
                   </div>
                 </td>
-                <td class="px-3 sm:px-4 py-3 align-middle text-sm text-slate-600 whitespace-nowrap">${formattedDateTime}</td>
+                <td class="px-3 sm:px-4 py-3 align-middle text-center">
+                  ${tgsCell}
+                </td>
                 <td class="px-3 sm:px-4 py-3 align-middle text-right max-w-[240px]">
                     <div class="truncate font-medium text-blue-700" title="${homeName}">${homeFavIcon} ${homeName} ${homeOddsDisplay}</div>
                 </td>
@@ -713,13 +790,13 @@ async function refreshModalData() {
                 </div>
                 <div class="flex items-center justify-between gap-2">
                   <div class="w-[40%] truncate text-blue-700 text-sm font-medium text-right" title="${homeName}">
-                    ${homeFavIcon} ${homeName} ${homeOddsDisplay}
+                    ${homeFavIcon} ${homeName} ${homePredBadge} ${homeOddsDisplay}
                   </div>
                   <div class="flex-shrink-0 text-center">
                     ${scoreOrStatusHtml}
                   </div>
                   <div class="w-[40%] truncate text-orange-600 text-sm font-medium text-left" title="${awayName}">
-                    ${awayOddsDisplay} ${awayName} ${awayFavIcon}
+                    ${awayOddsDisplay} ${awayPredBadge} ${awayName} ${awayFavIcon}
                   </div>
                 </div>
                 ${setsSmall}
@@ -732,8 +809,9 @@ async function refreshModalData() {
           <table class="w-full">
             <thead class="sticky top-0 bg-slate-50 text-[11px] font-semibold text-slate-600 z-10">
               <tr>
-                <th scope="col" class="px-3 sm:px-4 py-2 text-left">Turnuva</th>
                 <th scope="col" class="px-3 sm:px-4 py-2 text-left">Tarih/Saat</th>
+                <th scope="col" class="px-3 sm:px-4 py-2 text-left">Turnuva</th>
+                <th scope="col" class="px-3 sm:px-4 py-2 text-center">TGS</th>
                 <th scope="col" class="px-3 sm:px-4 py-2 text-right">Ev Sahibi</th>
                 <th scope="col" class="px-3 sm:px-4 py-2 text-center">Skor</th>
                 <th scope="col" class="px-3 sm:px-4 py-2 text-left">Deplasman</th>

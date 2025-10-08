@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 import sys
 import requests
+from contextlib import suppress
 
 try:
     from app.collector import (
@@ -34,6 +35,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 LIVE_CACHE = {"data": {"events": []}, "ts": 0}
 ALL_CACHE = {"data": {"events": []}, "ts": 0}
 ODDS_CACHE = {"data": {}, "key": "", "ts": 0}
+PREDICTION_CACHE = {"data": {}, "ts": {}}
+
+import os
+import json
+from datetime import datetime
+from app.pred_store import read_predictions, write_predictions
+from app.agent import run_agent_loop
 
 async def _get_live_events_cached(ttl: int = 15):
     now = asyncio.get_event_loop().time()
@@ -71,6 +79,16 @@ async def _get_all_events_cached(ttl: int = 60):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.on_event("startup")
+async def _startup_agent():
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(run_agent_loop())
+        print("Match agent started.")
+    except Exception as e:
+        print("Agent start error:", e)
 
 @app.get("/api/live-matches")
 async def api_live_matches():
@@ -152,6 +170,9 @@ async def api_match_details(event_id: int):
         # Gelen sonuçları anahtarlarla eşleştir
         data = dict(zip(endpoint_map.keys(), results))
 
+        # Prediction schedule metadata (optional hint to frontend)
+        # Not persisted here, schedule will maintain the JSON file
+
         return JSONResponse(content=data)
 
     except Exception as e:
@@ -227,12 +248,22 @@ def get_active_tournament_stats(team_id: int):
 @app.get("/api/match-prediction/{event_id}")
 async def api_match_prediction(event_id: int):
     try:
-        # Bu fonksiyon, tgs_calculator'dan gelen fonksiyonu doğrudan çağırmalıdır.
+        # First try to read from today's precomputed file
+        today = datetime.now().strftime("%Y-%m-%d")
+        all_preds = read_predictions(today)
+        key = str(event_id)
+        if key in all_preds:
+            return JSONResponse(content=all_preds[key])
+
+        # Fallback: compute on-demand (slower) and persist into file
         prediction_data = await get_match_prediction(event_id)
         
         if "error" in prediction_data:
             return JSONResponse(content=prediction_data, status_code=404)
-        
+
+        # Write back to today's file atomically
+        all_preds[key] = prediction_data
+        write_predictions(today, all_preds)
         return JSONResponse(content=prediction_data)
 
     except Exception as e:
@@ -241,3 +272,17 @@ async def api_match_prediction(event_id: int):
             content={"error": "Tahmin hesaplanırken beklenmedik bir sunucu hatası oluştu.", "detail": str(e)}, 
             status_code=500
         )
+
+
+@app.get("/api/predictions/today")
+async def api_predictions_today():
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        data = read_predictions(today)
+        return JSONResponse(content=data or {})
+    except Exception as e:
+        print("api_predictions_today error:", e)
+        return JSONResponse(content={}, status_code=500)
+
+
+# Moved to app/pred_store.py

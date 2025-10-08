@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -56,14 +56,48 @@ def fractional_to_decimal(fractional: str) -> float:
     except (ValueError, TypeError):
         return 2.0
 
+# --- Basit TTL Cache (in-memory) ---
+# Not: Uygulama yeniden başlatılınca temizlenir. Süreyi kısa tutuyoruz ki bayat veri riski olmasın.
+_CACHE_RANKINGS: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+_CACHE_MATCHES: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+_CACHE_YEAR_STATS: Dict[Tuple[int, int], Tuple[float, Dict[str, Any]]] = {}
+_CACHE_EVENT_DETAILS: Dict[int, Tuple[float, Optional[Dict[str, Any]]]] = {}
+_CACHE_PRE_MATCH: Dict[Tuple[int, int, int], Tuple[float, Dict[str, Any]]] = {}
+
+def _cache_get(cache: Dict, key, ttl_seconds: int):
+    now = asyncio.get_event_loop().time()
+    item = cache.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if (now - ts) < ttl_seconds:
+        return value
+    return None
+
+def _cache_put(cache: Dict, key, value):
+    now = asyncio.get_event_loop().time()
+    cache[key] = (now, value)
+
 # --- Veri Toplama Fonksiyonları ---
 async def get_player_stats_for_years(team_id: int, years: List[int]) -> Dict[str, List]:
-    tasks = [fetch_year_statistics(team_id, year) for year in years]
-    results = await asyncio.gather(*tasks)
+    # Yıllık istatistikleri kısa süre cache'leyelim (TTL ~ 15 dakika)
+    async def get_year(year: int) -> Dict[str, Any]:
+        cached = _cache_get(_CACHE_YEAR_STATS, (team_id, year), ttl_seconds=900)
+        if cached is not None:
+            return cached
+        data = await fetch_year_statistics(team_id, year)
+        _cache_put(_CACHE_YEAR_STATS, (team_id, year), data)
+        return data
+
+    # Tüm istenen yılları koru (doğruluk için)
+    results = await asyncio.gather(*[get_year(y) for y in years])
     all_yearly_stats = [stat for year_data in results for stat in year_data.get("statistics", [])]
     return {"all_stats": all_yearly_stats}
 
 async def get_event_details(event_id: int) -> Optional[Dict[str, Any]]:
+    cached = _cache_get(_CACHE_EVENT_DETAILS, event_id, ttl_seconds=30)
+    if cached is not None:
+        return cached
     today = datetime.now()
     yesterday = today - timedelta(days=1)
     dates_to_check = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
@@ -72,16 +106,23 @@ async def get_event_details(event_id: int) -> Optional[Dict[str, Any]]:
     
     for event in scheduled_events_data.get("events", []):
         if event.get("id") == event_id:
-            return {
+            result = {
                 "home_team_id": event.get("homeTeam", {}).get("id"),
                 "away_team_id": event.get("awayTeam", {}).get("id"),
                 "home_team_name": event.get("homeTeam", {}).get("name"),
                 "away_team_name": event.get("awayTeam", {}).get("name"),
                 "ground_type": event.get("groundType"),
             }
+            _cache_put(_CACHE_EVENT_DETAILS, event_id, result)
+            return result
     return None
 
-async def fetch_all_player_matches(team_id: int) -> Dict[str, Any]:
+async def fetch_all_player_matches(team_id: int, max_pages: int = 0) -> Dict[str, Any]:
+    # Oyuncu maçlarını kısa süre cache'le (TTL ~ 5 dakika)
+    cached = _cache_get(_CACHE_MATCHES, team_id, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     all_events, page = [], 0
     while True:
         data = await fetch_player_matches(team_id, page=page)
@@ -90,18 +131,33 @@ async def fetch_all_player_matches(team_id: int) -> Dict[str, Any]:
         all_events.extend(page_events)
         if not data.get("hasNextPage", False): break
         page += 1
+        if max_pages and page >= max_pages:
+            break
     unique_events = {event['id']: event for event in all_events}.values()
-    return {"events": sorted(list(unique_events), key=lambda x: x.get('startTimestamp', 0), reverse=True)}
+    result = {"events": sorted(list(unique_events), key=lambda x: x.get('startTimestamp', 0), reverse=True)}
+    _cache_put(_CACHE_MATCHES, team_id, result)
+    return result
 
 async def get_pre_match_data(event_id: int, home_team_id: int, away_team_id: int) -> Dict[str, Any]:
+    cached = _cache_get(_CACHE_PRE_MATCH, (event_id, home_team_id, away_team_id), ttl_seconds=60)
+    if cached is not None:
+        return cached
     current_year = datetime.now().year
     years_to_fetch = [current_year, current_year - 1, current_year - 2]
     
+    async def get_rankings_cached(tid: int):
+        cached_r = _cache_get(_CACHE_RANKINGS, tid, ttl_seconds=300)
+        if cached_r is not None:
+            return cached_r
+        data = await fetch_rankings_via_page(tid)
+        _cache_put(_CACHE_RANKINGS, tid, data)
+        return data
+
     tasks = {
-        "home_rankings": fetch_rankings_via_page(home_team_id),
+        "home_rankings": get_rankings_cached(home_team_id),
         "home_matches": fetch_all_player_matches(home_team_id),
         "home_yearly_stats": get_player_stats_for_years(home_team_id, years_to_fetch),
-        "away_rankings": fetch_rankings_via_page(away_team_id),
+        "away_rankings": get_rankings_cached(away_team_id),
         "away_matches": fetch_all_player_matches(away_team_id),
         "away_yearly_stats": get_player_stats_for_years(away_team_id, years_to_fetch),
     }
@@ -114,7 +170,9 @@ async def get_pre_match_data(event_id: int, home_team_id: int, away_team_id: int
     vote_details = await fetch_all_event_details(event_id, ["votes", "odds/1/all"])
     match_details = dict(zip(["votes", "oddsAll"], vote_details))
 
-    return {"match_details": match_details, "home_player": home_data, "away_player": away_data}
+    result = {"match_details": match_details, "home_player": home_data, "away_player": away_data}
+    _cache_put(_CACHE_PRE_MATCH, (event_id, home_team_id, away_team_id), result)
+    return result
 
 # --- Skor Hesaplama Fonksiyonu ---
 def calculate_metric_scores(data: Dict[str, Any], home_team_id: int, away_team_id: int, ground_type: str) -> tuple[Dict[str, float], Dict[str, float]]:
