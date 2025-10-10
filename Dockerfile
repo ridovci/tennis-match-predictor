@@ -1,27 +1,23 @@
-# ---------- TEMEL GÖRÜNTÜ ----------
-FROM python:3.12-slim
+# 1. Adım: Playwright'ın resmi, tüm bağımlılıkları içeren imajını kullan
+# Bu, apt-get ve --with-deps hatalarını tamamen çözer.
+FROM mcr.microsoft.com/playwright/python:v1.46.0-jammy
 
-# ---------- GEREKLİ SİSTEM PAKETLERİ ----------
-RUN apt-get update && apt-get install -y \
-    xvfb xauth wget gnupg unzip curl \
-    libnss3 libatk-bridge2.0-0 libgtk-3-0 libasound2 libx11-xcb1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# ---------- ÇALIŞMA DİZİNİ ----------
+# 2. Adım: Uygulama dosyalarının bulunacağı bir çalışma dizini oluştur
 WORKDIR /app
 
-# ---------- PROJEYİ KOPYALA ----------
-COPY . .
+# 3. Adım: Önce sadece requirements.txt dosyasını kopyala
+# Bu, Docker'ın katman önbelleğini daha verimli kullanmasını sağlar
+COPY requirements.txt .
 
-# ---------- PYTHON BAĞIMLILIKLARI ----------
+# 4. Adım: Python kütüphanelerini yükle
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ---------- PLAYWRIGHT TARAYICISI ----------
-RUN playwright install --with-deps chromium
+# 5. Adım: Projenin geri kalan tüm dosyalarını kopyala
+COPY . .
 
-# ---------- ENVIRONMENT DEĞİŞKENLERİ ----------
-ENV PLAYWRIGHT_BROWSERS_PATH=0
-ENV PORT=8080
+# 6. Adım: Uygulamanın dış dünyaya açılacağı portu belirt
+EXPOSE 8000
 
-# ---------- UYGULAMAYI BAŞLAT ----------
-CMD ["xvfb-run", "-a", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# 7. Adım: Uygulamayı başlat
+# Not: Sunucunuzun dışarıdan gelen bağlantıları dinlemesi için --host 0.0.0.0 gereklidir.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
