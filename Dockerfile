@@ -16,8 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 6. Adım: Uygulamanın dış dünyaya açılacağı portu belirt
-EXPOSE 8000
+EXPOSE 8080
 
-# 7. Adım: Uygulamayı başlat
-# Not: Sunucunuzun dışarıdan gelen bağlantıları dinlemesi için --host 0.0.0.0 gereklidir.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 7. Adım: Uygulamayı başlat (DİNAMİK PORT KULLANILACAK ŞEKİLDE GÜNCELLENDİ)
+# Google Cloud Run tarafından sağlanan $PORT değişkenini kullanır.
+# Yerelde çalıştırırken varsayılan olarak 8000 kullanır.
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+
