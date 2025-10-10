@@ -1,0 +1,98 @@
+# =========================
+# 🎾 TENNIS SHAP PIPELINE
+# =========================
+
+import pandas as pd
+import shap
+import xgboost as xgb
+import matplotlib.pyplot as plt
+import numpy as np
+import json
+
+# --- 1️⃣ Veri Yükleme ---
+# JSON dosyasını oku
+with open("tennis_ml_dataset.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+df = pd.DataFrame(data)
+
+print(f"Toplam maç sayısı: {len(df)}")
+print(f"Toplam özellik sayısı: {len(df.columns)}")
+
+# --- 2️⃣ Ön İşleme ---
+# Gereksiz veya non-numeric sütunları çıkar
+drop_cols = [
+    "event_id", "match_date", "home_player_name", "away_player_name",
+    "home_country", "away_country", "home_plays", "away_plays",
+    "ground_type", "tournament_name"
+]
+df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+
+# Hedef değişken (winner)
+y = df["winner"].astype(int)
+X = df.drop(columns=["winner"], errors="ignore")
+
+# Sadece sayısal veriler
+X = X.select_dtypes(include=["number"]).fillna(0)
+
+# --- 3️⃣ Model Eğitimi (XGBoost) ---
+model = xgb.XGBClassifier(
+    n_estimators=300,
+    max_depth=6,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
+)
+
+model.fit(X, y)
+
+# --- 4️⃣ SHAP Analizi ---
+explainer = shap.TreeExplainer(model)
+shap_values = explainer.shap_values(X)
+
+# --- 5️⃣ Global SHAP Analizi ---
+plt.figure(figsize=(10, 6))
+shap.summary_plot(shap_values, X, plot_type="bar", show=False)
+plt.title("Tenis Maci Tahmin Modeli - Ozellik Etkileri (Global SHAP)")
+plt.tight_layout()
+plt.show(
+
+# --- 6️⃣ Detaylı SHAP Analizi (Dağılım Grafiği) ---
+plt.figure(figsize=(10, 6))
+shap.summary_plot(shap_values, X, show=False)
+plt.title("SHAP Feature Impact Distribution")
+plt.tight_layout()
+plt.show()
+
+# --- 7️⃣ Tek Maç (Local) Açıklama Örneği ---
+sample_index = np.random.randint(0, len(X))
+print(f"Örnek maç: index {sample_index}")
+shap.force_plot(
+    explainer.expected_value,
+    shap_values[sample_index, :],
+    X.iloc[sample_index, :],
+    matplotlib=True
+)
+
+
+# --- 8️⃣ SHAP Önem Tablosu (Text Output) ---
+
+import pandas as pd
+import numpy as np
+
+# Ortalama mutlak SHAP değerlerini hesapla
+shap_importance = np.abs(shap_values).mean(axis=0)
+
+# Özellik isimleriyle eşleştir
+importance_df = pd.DataFrame({
+    "Feature": X.columns,
+    "Mean_SHAP_Value": shap_importance
+})
+
+# Önem sırasına göre azalan biçimde sırala
+importance_df = importance_df.sort_values(by="Mean_SHAP_Value", ascending=False)
+
+# İlk 20 özelliği göster
+print("\nSHAP Onem Dereceleri (Ilk 20 Ozellik):\n")
+print(importance_df.head(20).to_string(index=False))
